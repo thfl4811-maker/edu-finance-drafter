@@ -6,7 +6,7 @@ import { createWorker } from 'tesseract.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
-const TEMPLATE_URL = '/품목내역.xlsx';
+const TEMPLATE_URL = '/품목내역(통합).xls';
 const supported = '.xlsx,.xls,.csv,.pdf,.png,.jpg,.jpeg,.webp';
 
 let items = [];
@@ -66,7 +66,7 @@ app.innerHTML = `
           <div class="summary-box"><span>검산 결과</span><strong id="checkResult">정상</strong></div>
         </div>
         <div class="action-row" style="margin-top:16px">
-          <button id="downloadBtn" class="btn btn-primary">에듀파인 품목내역.xlsx 내려받기</button>
+          <button id="downloadBtn" class="btn btn-primary">에듀파인 품목내역.xls 내려받기</button>
           <button id="resetBtn" class="btn btn-soft">다른 견적서 불러오기</button>
         </div>
         <p class="note">최종 파일은 등록된 에듀파인 서식의 열 순서와 제목을 유지합니다. S2B물품번호는 비워 두고, 수수료는 0으로 입력합니다.</p>
@@ -135,7 +135,7 @@ async function downloadTemplate() {
   const res = await fetch(TEMPLATE_URL);
   if (!res.ok) throw new Error('빈 서식 파일을 불러오지 못했습니다.');
   const blob = await res.blob();
-  saveBlob(blob, '품목내역.xlsx');
+  saveBlob(blob, '품목내역(통합).xls');
 }
 
 function saveBlob(blob, name) {
@@ -445,45 +445,129 @@ function updateSummary() {
 
 async function exportEdufine() {
   if (!items.length) return;
-  let wb, ws;
-  try {
-    const res = await fetch(TEMPLATE_URL, {cache:'no-store'});
-    if (!res.ok) throw new Error('template');
-    const buffer = await res.arrayBuffer();
-    wb = XLSX.read(buffer, {type:'array'});
-    ws = wb.Sheets[wb.SheetNames[0]];
-    const title = clean(ws?.A1?.v);
-    if (!ws || title !== '품목내역') throw new Error('invalid template');
-  } catch (_) {
-    wb = XLSX.utils.book_new();
-    ws = XLSX.utils.aoa_to_sheet([
-      ['품목내역','','','','','','','',''],
-      ['','','','','','','','',''],
-      ['순번','* 내용','S2B물품번호','규격','단위','수량','예상단가','* 예상금액','수수료']
-    ]);
-    ws['!merges'] = [{s:{r:0,c:0}, e:{r:0,c:8}}];
-    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-  }
-  const startRow = 4;
-  for (let r=startRow; r<startRow+1000; r++) {
-    for (let c=0; c<9; c++) delete ws[XLSX.utils.encode_cell({r:r-1,c})];
-  }
-  items.filter(it => it.name && !isSummaryLabel(it.name)).forEach((it,idx) => {
-    const row = startRow + idx;
-    const values = [idx+1, it.name, '', it.spec, it.unit, num(it.quantity), num(it.unitPrice), num(it.amount), 0];
-    values.forEach((v,c) => {
-      const addr = XLSX.utils.encode_cell({r:row-1,c});
-      ws[addr] = {t: typeof v === 'number' ? 'n' : 's', v};
-      if ([5,6,7,8].includes(c)) ws[addr].z = '#,##0';
-    });
-  });
-  const endRow = Math.max(3, startRow + items.length - 1);
-  ws['!ref'] = `A1:I${endRow}`;
-  ws['!cols'] = [{wch:7},{wch:32},{wch:16},{wch:24},{wch:10},{wch:10},{wch:14},{wch:16},{wch:10}];
-  const out = XLSX.write(wb, {bookType:'xlsx', type:'array'});
-  saveBlob(new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), '품목내역.xlsx');
-}
 
+  // 사용자가 제공한 실제 에듀파인 통합 양식을 그대로 불러온다.
+  const res = await fetch(TEMPLATE_URL, {cache:'no-store'});
+  if (!res.ok) throw new Error('에듀파인 원본 서식을 불러오지 못했습니다.');
+  const buffer = await res.arrayBuffer();
+  const wb = XLSX.read(buffer, {
+    type: 'array',
+    cellStyles: true,
+    cellFormula: true,
+    cellNF: true,
+    cellDates: true,
+    bookVBA: true
+  });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  if (!ws) throw new Error('에듀파인 원본 서식의 시트를 찾지 못했습니다.');
+
+  // 원본 양식에서 실제 헤더 행과 열 위치를 자동으로 찾는다.
+  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
+  let headerRow = -1;
+  const cols = {};
+  const wanted = {
+    seq: ['순번'],
+    name: ['*내용','내용'],
+    s2b: ['s2b물품번호','물품번호'],
+    spec: ['규격'],
+    unit: ['단위'],
+    qty: ['수량'],
+    price: ['예상단가'],
+    amount: ['*예상금액','예상금액'],
+    fee: ['수수료']
+  };
+  const keyOf = value => clean(value).toLowerCase().replace(/\s+/g,'');
+
+  for (let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 30); r++) {
+    const found = {};
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const cell = ws[XLSX.utils.encode_cell({r,c})];
+      const label = keyOf(cell?.v);
+      for (const [key, aliases] of Object.entries(wanted)) {
+        if (aliases.some(a => label === keyOf(a))) found[key] = c;
+      }
+    }
+    if (found.name !== undefined && found.qty !== undefined && found.price !== undefined && found.amount !== undefined) {
+      headerRow = r;
+      Object.assign(cols, found);
+      break;
+    }
+  }
+  if (headerRow < 0) throw new Error('원본 서식에서 품목 입력 열을 찾지 못했습니다.');
+
+  // 필수 열이 없을 경우에는 원본 열 순서를 기준으로 보완한다.
+  const ordered = ['seq','name','s2b','spec','unit','qty','price','amount','fee'];
+  const known = Object.values(cols);
+  const baseCol = known.length ? Math.min(...known) : range.s.c;
+  ordered.forEach((key, i) => { if (cols[key] === undefined) cols[key] = baseCol + i; });
+
+  const startRow = headerRow + 1;
+  const templateStyleRow = startRow;
+  const maxCol = Math.max(...Object.values(cols));
+
+  // 기존 예시값만 지우고 원본의 병합, 크기, 숨김, 인쇄 설정과 서식은 유지한다.
+  for (let r = startRow; r <= Math.max(range.e.r, startRow + 300); r++) {
+    for (const c of Object.values(cols)) {
+      const addr = XLSX.utils.encode_cell({r,c});
+      if (ws[addr]) {
+        delete ws[addr].v;
+        delete ws[addr].w;
+        delete ws[addr].f;
+        ws[addr].t = 'z';
+      }
+    }
+  }
+
+  const filtered = items.filter(it => it.name && !isSummaryLabel(it.name));
+  filtered.forEach((it, idx) => {
+    const r = startRow + idx;
+    const rowValues = {
+      seq: idx + 1,
+      name: clean(it.name),
+      s2b: '',
+      spec: clean(it.spec),
+      unit: clean(it.unit) || '개',
+      qty: num(it.quantity),
+      price: Math.round(num(it.unitPrice)),
+      amount: Math.round(num(it.quantity) * num(it.unitPrice)),
+      fee: 0
+    };
+    for (const key of ordered) {
+      const c = cols[key];
+      const addr = XLSX.utils.encode_cell({r,c});
+      const styleAddr = XLSX.utils.encode_cell({r:templateStyleRow,c});
+      const styleCell = ws[styleAddr] || {};
+      const v = rowValues[key];
+      ws[addr] = {
+        ...styleCell,
+        v,
+        t: typeof v === 'number' ? 'n' : 's'
+      };
+      delete ws[addr].w;
+      delete ws[addr].f;
+      if (['qty','price','amount','fee','seq'].includes(key)) ws[addr].z = styleCell.z || '#,##0';
+    }
+  });
+
+  // 원본 범위를 줄이지 않고 필요한 경우에만 아래로 확장한다.
+  const lastRow = startRow + Math.max(filtered.length - 1, 0);
+  const originalRange = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
+  originalRange.e.r = Math.max(originalRange.e.r, lastRow);
+  originalRange.e.c = Math.max(originalRange.e.c, maxCol);
+  ws['!ref'] = XLSX.utils.encode_range(originalRange);
+
+  // 반드시 사용자가 준 레거시 Excel 형식(.xls)으로 저장한다.
+  const out = XLSX.write(wb, {
+    bookType: 'biff8',
+    type: 'array',
+    cellStyles: true,
+    bookVBA: true
+  });
+  saveBlob(
+    new Blob([out], {type:'application/vnd.ms-excel'}),
+    '품목내역(통합).xls'
+  );
+}
 function buildPurchaseDraft() {
   if (!items.length) return;
   const purpose = clean($('#purpose').value) || '업무 운영';
