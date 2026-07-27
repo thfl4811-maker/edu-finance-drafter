@@ -444,11 +444,19 @@ function updateSummary() {
 }
 
 async function exportEdufine() {
-  if (!items.length) return;
+  const filtered = items.filter(
+    (it) => it.name && !isSummaryLabel(it.name)
+  );
 
-  // 사용자가 제공한 실제 에듀파인 통합 양식을 그대로 불러온다.
-  const res = await fetch(TEMPLATE_URL, {cache:'no-store'});
-  if (!res.ok) throw new Error('에듀파인 원본 서식을 불러오지 못했습니다.');
+  if (!filtered.length) {
+    throw new Error('내려받을 품목이 없습니다.');
+  }
+
+  const res = await fetch(encodeURI(TEMPLATE_URL), { cache: 'no-store' });
+  if (!res.ok) {
+    throw new Error(`에듀파인 원본 서식을 불러오지 못했습니다. (${res.status})`);
+  }
+
   const buffer = await res.arrayBuffer();
   const wb = XLSX.read(buffer, {
     type: 'array',
@@ -458,113 +466,90 @@ async function exportEdufine() {
     cellDates: true,
     bookVBA: true
   });
+
   const ws = wb.Sheets[wb.SheetNames[0]];
-  if (!ws) throw new Error('에듀파인 원본 서식의 시트를 찾지 못했습니다.');
-
-  // 원본 양식에서 실제 헤더 행과 열 위치를 자동으로 찾는다.
-  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
-  let headerRow = -1;
-  const cols = {};
-  const wanted = {
-    seq: ['순번'],
-    name: ['*내용','내용'],
-    s2b: ['s2b물품번호','물품번호'],
-    spec: ['규격'],
-    unit: ['단위'],
-    qty: ['수량'],
-    price: ['예상단가'],
-    amount: ['*예상금액','예상금액'],
-    fee: ['수수료']
-  };
-  const keyOf = value => clean(value).toLowerCase().replace(/\s+/g,'');
-
-  for (let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 30); r++) {
-    const found = {};
-    for (let c = range.s.c; c <= range.e.c; c++) {
-      const cell = ws[XLSX.utils.encode_cell({r,c})];
-      const label = keyOf(cell?.v);
-      for (const [key, aliases] of Object.entries(wanted)) {
-        if (aliases.some(a => label === keyOf(a))) found[key] = c;
-      }
-    }
-    if (found.name !== undefined && found.qty !== undefined && found.price !== undefined && found.amount !== undefined) {
-      headerRow = r;
-      Object.assign(cols, found);
-      break;
-    }
+  if (!ws) {
+    throw new Error('에듀파인 원본 서식의 시트를 찾지 못했습니다.');
   }
-  if (headerRow < 0) throw new Error('원본 서식에서 품목 입력 열을 찾지 못했습니다.');
 
-  // 필수 열이 없을 경우에는 원본 열 순서를 기준으로 보완한다.
-  const ordered = ['seq','name','s2b','spec','unit','qty','price','amount','fee'];
-  const known = Object.values(cols);
-  const baseCol = known.length ? Math.min(...known) : range.s.c;
-  ordered.forEach((key, i) => { if (cols[key] === undefined) cols[key] = baseCol + i; });
+  // 사용자가 제공한 에듀파인 원본 양식의 고정 입력 위치
+  // 4행부터 품목을 입력하고 A~I열을 그대로 사용한다.
+  const START_ROW = 4;
 
-  const startRow = headerRow + 1;
-  const templateStyleRow = startRow;
-  const maxCol = Math.max(...Object.values(cols));
+  // 기존 품목 입력값만 삭제한다.
+  // 제목·안내문·셀 병합·열 너비·서식은 건드리지 않는다.
+  const currentRange = XLSX.utils.decode_range(ws['!ref'] || 'A1:I4');
+  const clearEndRow = Math.max(currentRange.e.r + 1, START_ROW + 300);
 
-  // 기존 예시값만 지우고 원본의 병합, 크기, 숨김, 인쇄 설정과 서식은 유지한다.
-  for (let r = startRow; r <= Math.max(range.e.r, startRow + 300); r++) {
-    for (const c of Object.values(cols)) {
-      const addr = XLSX.utils.encode_cell({r,c});
-      if (ws[addr]) {
-        delete ws[addr].v;
-        delete ws[addr].w;
-        delete ws[addr].f;
-        ws[addr].t = 'z';
+  for (let row = START_ROW; row <= clearEndRow; row++) {
+    for (let col = 0; col <= 8; col++) {
+      const addr = XLSX.utils.encode_cell({ r: row - 1, c: col });
+      const cell = ws[addr];
+
+      if (cell) {
+        delete cell.v;
+        delete cell.w;
+        delete cell.f;
+        cell.t = 'z';
       }
     }
   }
 
-  const filtered = items.filter(it => it.name && !isSummaryLabel(it.name));
-  filtered.forEach((it, idx) => {
-    const r = startRow + idx;
-    const rowValues = {
-      seq: idx + 1,
-      name: clean(it.name),
-      s2b: '',
-      spec: clean(it.spec),
-      unit: clean(it.unit) || '개',
-      qty: num(it.quantity),
-      price: Math.round(num(it.unitPrice)),
-      amount: Math.round(num(it.quantity) * num(it.unitPrice)),
-      fee: 0
-    };
-    for (const key of ordered) {
-      const c = cols[key];
-      const addr = XLSX.utils.encode_cell({r,c});
-      const styleAddr = XLSX.utils.encode_cell({r:templateStyleRow,c});
+  // 4행의 서식을 각 품목 행에 복사한다.
+  filtered.forEach((it, index) => {
+    const rowNumber = START_ROW + index;
+    const rowIndex = rowNumber - 1;
+
+    const values = [
+      index + 1,                              // A 순번
+      clean(it.name),                         // B 내용
+      '',                                     // C S2B물품번호
+      clean(it.spec),                         // D 규격
+      clean(it.unit) || '개',                 // E 단위
+      num(it.quantity),                       // F 수량
+      Math.round(num(it.unitPrice)),           // G 예상단가(부가세 포함)
+      Math.round(num(it.quantity) * num(it.unitPrice)), // H 예상금액
+      0                                       // I 수수료
+    ];
+
+    values.forEach((value, colIndex) => {
+      const addr = XLSX.utils.encode_cell({ r: rowIndex, c: colIndex });
+      const styleAddr = XLSX.utils.encode_cell({
+        r: START_ROW - 1,
+        c: colIndex
+      });
+
       const styleCell = ws[styleAddr] || {};
-      const v = rowValues[key];
       ws[addr] = {
         ...styleCell,
-        v,
-        t: typeof v === 'number' ? 'n' : 's'
+        v: value,
+        t: typeof value === 'number' ? 'n' : 's'
       };
+
       delete ws[addr].w;
       delete ws[addr].f;
-      if (['qty','price','amount','fee','seq'].includes(key)) ws[addr].z = styleCell.z || '#,##0';
-    }
+
+      if ([0, 5, 6, 7, 8].includes(colIndex)) {
+        ws[addr].z = styleCell.z || '#,##0';
+      }
+    });
   });
 
-  // 원본 범위를 줄이지 않고 필요한 경우에만 아래로 확장한다.
-  const lastRow = startRow + Math.max(filtered.length - 1, 0);
-  const originalRange = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
-  originalRange.e.r = Math.max(originalRange.e.r, lastRow);
-  originalRange.e.c = Math.max(originalRange.e.c, maxCol);
-  ws['!ref'] = XLSX.utils.encode_range(originalRange);
+  const lastRowIndex = START_ROW - 1 + filtered.length - 1;
+  const outRange = XLSX.utils.decode_range(ws['!ref'] || 'A1:I4');
+  outRange.e.r = Math.max(outRange.e.r, lastRowIndex);
+  outRange.e.c = Math.max(outRange.e.c, 8);
+  ws['!ref'] = XLSX.utils.encode_range(outRange);
 
-  // 반드시 사용자가 준 레거시 Excel 형식(.xls)으로 저장한다.
   const out = XLSX.write(wb, {
     bookType: 'biff8',
     type: 'array',
     cellStyles: true,
     bookVBA: true
   });
+
   saveBlob(
-    new Blob([out], {type:'application/vnd.ms-excel'}),
+    new Blob([out], { type: 'application/vnd.ms-excel' }),
     '품목내역(통합).xls'
   );
 }
@@ -653,11 +638,11 @@ $('#downloadBtn').onclick = async () => {
     await exportEdufine();
   } catch (e) {
     console.error(e);
-    alert(e.message || '에듀파인 파일을 만드는 중 오류가 발생했습니다.');
+    setStatus(e.message || '에듀파인 파일을 만드는 중 오류가 발생했습니다.', true);
   }
 };
-$('#resetBtn').onclick = () => {
-};$('#resetBtn').onclick = () => { fileInput.value=''; items=[]; $('#resultCard').classList.add('hidden'); $('#draftCard').classList.add('hidden'); $('#draftResultCard').classList.add('hidden'); setStatus('새 견적서를 업로드해 주세요.'); };
+
+$('#resetBtn').onclick = () => { fileInput.value=''; items=[]; $('#resultCard').classList.add('hidden'); $('#draftCard').classList.add('hidden'); $('#draftResultCard').classList.add('hidden'); setStatus('새 견적서를 업로드해 주세요.'); };
 $('#makeDraftBtn').onclick = buildPurchaseDraft;
 $('#copyDraftBtn').onclick = e => copyText($('#draftPreview').textContent,e.currentTarget);
 $('#makeMeetingBtn').onclick = buildMeetingDraft;
