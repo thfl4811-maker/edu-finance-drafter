@@ -653,8 +653,14 @@ $('#downloadBtn').onclick = async () => {
     await exportEdufine();
   } catch (e) {
     console.error(e);
-    setStatus(e.message || '에듀파인 파일을 만드는 중 오류가 발생했습니다.', true);
+    setStatus(
+      e.message || '에듀파인 파일을 만드는 중 오류가 발생했습니다.',
+      true
+    );
   }
+};
+
+$('#resetBtn').onclick = () => {
 };$('#resetBtn').onclick = () => { fileInput.value=''; items=[]; $('#resultCard').classList.add('hidden'); $('#draftCard').classList.add('hidden'); $('#draftResultCard').classList.add('hidden'); setStatus('새 견적서를 업로드해 주세요.'); };
 $('#makeDraftBtn').onclick = buildPurchaseDraft;
 $('#copyDraftBtn').onclick = e => copyText($('#draftPreview').textContent,e.currentTarget);
