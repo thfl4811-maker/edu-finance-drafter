@@ -1,0 +1,18 @@
+{
+  "name": "edu-finance-drafter",
+  "version": "1.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "pdfjs-dist": "latest",
+    "tesseract.js": "latest",
+    "xlsx": "latest"
+  },
+  "devDependencies": {
+    "vite": "latest"
+  }
+}
