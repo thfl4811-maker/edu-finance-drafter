@@ -6,7 +6,7 @@ import { createWorker } from 'tesseract.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
-const TEMPLATE_URL = '/품목내역(통합).xls';
+const TEMPLATE_URL = '/품목내역(통합) (2).xls';
 const supported = '.xlsx,.xls,.csv,.pdf,.png,.jpg,.jpeg,.webp';
 
 let items = [];
