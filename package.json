@@ -1,17 +1,12 @@
 {
-  "name": "edu-finance-drafter-ai",
-  "version": "2.0.0",
+  "name": "edu-finance-drafter-browser",
+  "version": "3.0.0",
   "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
+  "scripts": {"dev":"vite","build":"vite build","preview":"vite preview"},
   "dependencies": {
     "pdfjs-dist": "^5.4.54",
+    "tesseract.js": "^6.0.1",
     "xlsx": "^0.18.5"
   },
-  "devDependencies": {
-    "vite": "^7.0.0"
-  }
+  "devDependencies": {"vite":"^7.0.0"}
 }
