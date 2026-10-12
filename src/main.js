@@ -1,5 +1,6 @@
 import './style.css';
 import * as XLSX from 'xlsx';
+import JSZip from 'jszip';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { createWorker } from 'tesseract.js';
@@ -411,12 +412,37 @@ function rowsFromText(textValue) {
     .map((line) => line.split(/\t|\s{2,}/).filter(Boolean));
 }
 
+// 한셀(HCell)로 저장한 xlsx에는 hs: 전용 서식 태그가 들어 있어 SheetJS가 시트를 통째로 비워 버린다.
+// 업로드 단계에서 그 태그만 지워 정상적인 xlsx로 만든 뒤 읽는다. (일반 엑셀 파일은 그대로 통과)
+async function cleanHancellXlsx(arrayBuffer) {
+  const head = new Uint8Array(arrayBuffer, 0, 2);
+  if (head[0] !== 0x50 || head[1] !== 0x4b) return arrayBuffer; // zip(xlsx)이 아니면 건너뜀(.xls·.csv)
+  try {
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    let changed = false;
+    const targets = Object.keys(zip.files).filter((p) => /^xl\/.+\.xml$/.test(p));
+    for (const p of targets) {
+      const xml = await zip.file(p).async('string');
+      if (!xml.includes('<hs:')) continue;
+      zip.file(p, xml
+        .replace(/<hs:[^>]*\/>/g, '')
+        .replace(/<hs:([\w-]+)[^>]*>[\s\S]*?<\/hs:\1>/g, ''));
+      changed = true;
+    }
+    return changed ? await zip.generateAsync({ type: 'arraybuffer' }) : arrayBuffer;
+  } catch (e) {
+    return arrayBuffer;
+  }
+}
+
 async function parseSpreadsheet(file) {
-  const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', raw: false });
+  const buffer = await cleanHancellXlsx(await file.arrayBuffer());
+  const workbook = XLSX.read(buffer, { type: 'array', raw: false });
   let best = [];
   const allRows = [];
 
   for (const sheetName of workbook.SheetNames) {
+    if (!workbook.Sheets[sheetName]) continue;
     const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
       header: 1,
       defval: '',
